@@ -6,10 +6,10 @@ def get_github_config():
     target_date1 = os.environ.get('TARGET_DATE1', '') 
     target_date2 = os.environ.get('TARGET_DATE2', '')
     
-    # 如果没有指定日期，计算昨天的日期
+    # 如果没有指定日期，计算运行时的日期
     if not target_date1:
         from datetime import datetime, timedelta
-        target_date1 = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+        target_date1 = (datetime.now()).strftime('%Y%m%d')
     if not target_data2:
         target_date2 = target_date1
     
