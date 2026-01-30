@@ -3,7 +3,7 @@ import os
 
 def get_github_config():
     """从GitHub环境变量获取配置"""
-    target_date1 = os.environ.get('TARGET_DATE1', '') 
+    target_date1 = os.environ.get('TARGET_DATE1', '')
     target_date2 = os.environ.get('TARGET_DATE2', '')
     
     # 如果没有指定日期，计算运行时的日期
