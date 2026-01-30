@@ -17,7 +17,7 @@ Daily. Get papers about high-z galaxies and galactic cosmology on Arxiv, filter 
     | `DEEPSEEK_API_KEY` | DeepSeek API密钥 |
     | `EMAIL_SENDER` | 发件邮箱（QQ邮箱） |
     | `EMAIL_PASSWORD` | QQ邮箱授权码 |
-    | `EMAIL_RECEIVER` | 收件邮箱，写成list， e.g. ['abc@gmail.com','ddd@qq.com']|
+    | `EMAIL_RECEIVER` | 收件邮箱，用逗号隔开， e.g. abc@gmail.com,ddd@qq.com|
 
 
 3. Test
