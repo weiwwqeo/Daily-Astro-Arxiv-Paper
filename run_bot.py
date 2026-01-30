@@ -4,7 +4,7 @@ import sys
 def main():
     try:
         from github_config import get_github_config
-        from your_paper_bot import DailyPaperBot 
+        from your_paper_bot import DailyPaperBot
         print('running DailyPaperBot')
         config = get_github_config()
         bot = DailyPaperBot(config)
