@@ -1,0 +1,130 @@
+name: Daily Galactic Cosmology Paper Digest        
+
+# Controls when the workflow will run
+on:
+  # Triggers the workflow on push or pull request events but only for the "main" branch
+  # push:
+  #   branches: [ "main" ]
+  # pull_request:
+  #   branches: [ "main" ]
+  schedule:
+    - cron: '55 23 * * *'
+
+
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+    inputs:
+      target_date1:
+        description: '指定日期 (YYYYMMDD格式)'
+        required: false
+        default: ''
+      target_date2:
+        description: '指定日期 (YYYYMMDD格式)'
+        required: false
+        default: ''
+
+# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+jobs:
+  # This workflow contains a single job called "build"
+  RunPaperBot:
+    # The type of runner that the job will run on
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: 📦 检出代码
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 1
+    
+    - name: 🐍 设置Python环境
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+    - name: 📝 显示运行信息
+      id: info
+      run: |
+        echo "运行时间: $(date)"
+        echo "触发方式: ${{ github.event_name }}"
+        echo "运行分支: ${{ github.ref }}"
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          echo "手动触发，start 日期: ${{ github.event.inputs.target_date1 }}"
+          echo "手动触发，end 日期: ${{ github.event.inputs.target_date2 }}"
+        fi
+
+    - name: 📚 安装Python依赖
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: 🤖 运行arXiv机器人
+      env:
+        ACTIONS_STEP_DEBUG: true
+        ACTIONS_RUNNER_DEBUG: true
+        # Python 无缓冲输出
+        PYTHONUNBUFFERED: 1
+
+        # 必填Secrets
+        DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+        EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+        
+        # 可选Secrets（使用默认值）
+        EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER || secrets.EMAIL_SENDER }}
+        DEEPSEEK_MODEL: ${{ secrets.DEEPSEEK_MODEL || 'deepseek-chat' }}
+        # 运行参数
+        TARGET_DATE1: ${{ github.event.inputs.target_date1 }}
+        TARGET_DATE2: ${{ github.event.inputs.target_date2 }}
+        
+        # 性能设置
+        # MAX_PAPERS: ${{ secrets.MAX_PAPERS || '15' }}
+        # TEMPERATURE: ${{ secrets.TEMPERATURE || '0.2' }}
+        # MAX_TOKENS: ${{ secrets.MAX_TOKENS || '3500' }}
+        
+        # 超时设置
+        LOGIN_TIMEOUT: ${{ secrets.LOGIN_TIMEOUT || '30' }}
+        FETCH_TIMEOUT: ${{ secrets.FETCH_TIMEOUT || '90' }}
+        AI_TIMEOUT: ${{ secrets.AI_TIMEOUT || '1200' }}
+      run: |
+        set -x
+        echo "开始运行arXiv机器人..."
+        echo "目标日期: ${TARGET_DATE1} to ${TARGET_DATE2} "
+        echo "AI模型: ${DEEPSEEK_MODEL}"
+
+        echo "=== 调试信息 ==="
+        echo "当前目录: $(pwd)"
+        echo "Python路径: $(which python)"
+        echo "Python版本:"
+        python --version 2>&1
+        echo "目录内容:"
+        ls -la
+
+        
+        # 运行主程序
+        python -u ./run_bot.py
+        
+        echo "=== 运行后检查 ==="
+        echo "当前目录内容:"
+        ls -la
+        
+    - name: 💾 保存运行日志
+      if: always()  # 无论成功失败都保存日志
+      uses: actions/upload-artifact@v4
+      with:
+        name: arxiv-bot-logs-${{ github.run_id }}
+        path: |
+          *.log
+          *.json
+          *.html
+        retention-days: 7
+    
+    - name: 📊 检查运行状态
+      if: always()
+      run: |
+        echo "运行状态: ${{ job.status }}"
+        if [ "${{ job.status }}" = "success" ]; then
+          echo "✅ 任务执行成功"
+        else
+          echo "❌ 任务执行失败"
+        fi
+
