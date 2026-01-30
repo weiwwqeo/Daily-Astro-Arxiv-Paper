@@ -10,7 +10,7 @@ def get_github_config():
     if not target_date1:
         from datetime import datetime, timedelta
         target_date1 = (datetime.now()).strftime('%Y%m%d')
-    if not target_data2:
+    if not target_date2:  # 这里之前写错了，应该是 target_date2
         target_date2 = target_date1
     
     return {
@@ -26,4 +26,3 @@ def get_github_config():
         'smtp_port': 587,
         'email_receiver': os.environ.get('EMAIL_RECEIVER', ''), # in list
     }
-
