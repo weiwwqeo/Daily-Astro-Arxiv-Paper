@@ -24,5 +24,5 @@ def get_github_config():
         'email_password': os.environ.get('EMAIL_PASSWORD', ''),
         'smtp_server': 'smtp.qq.com',
         'smtp_port': 587,
-        'email_receiver': os.environ.get('EMAIL_RECEIVER', ''), # in list
+        'email_receiver': os.environ.get('EMAIL_RECEIVER', '').split(',')
     }
