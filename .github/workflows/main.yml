@@ -88,6 +88,9 @@ jobs:
       run: |
         set -x
         echo "开始运行arXiv机器人..."
+        # 使用内置变量（格式较简单）
+        echo "当前时间：$(printf '%(%Y-%m-%d %H:%M:%S)T')"
+
         echo "目标日期: ${TARGET_DATE1} to ${TARGET_DATE2} "
         echo "AI模型: ${DEEPSEEK_MODEL}"
 
