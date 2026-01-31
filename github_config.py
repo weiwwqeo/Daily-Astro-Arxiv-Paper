@@ -8,8 +8,8 @@ def get_github_config():
     
     # 如果没有指定日期，计算运行时的日期
     if not target_date1:
-        from datetime import datetime, timedelta
-        target_date1 = (datetime.now()).strftime('%Y%m%d')
+        from datetime import datetime, timedelta, timezone
+        target_date1 = (datetime.now(timezone.utc)).strftime('%Y%m%d')
     if not target_date2:  # 这里之前写错了，应该是 target_date2
         target_date2 = target_date1
     
