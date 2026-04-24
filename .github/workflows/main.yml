@@ -8,18 +8,18 @@ on:
   # pull_request:
   #   branches: [ "main" ]
   schedule:
-    - cron: '40 23 * * *'
+    - cron: '40 21 * * *'
 
 
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
     inputs:
       target_date1:
-        description: '指定日期 (YYYYMMDD格式)'
+        description: '指定日期 (推荐 YYYYMMDD，也兼容 YYYY-MM-DD)'
         required: false
         default: ''
       target_date2:
-        description: '指定日期 (YYYYMMDD格式)'
+        description: '指定日期 (推荐 YYYYMMDD，也兼容 YYYY-MM-DD)'
         required: false
         default: ''
 
@@ -130,4 +130,3 @@ jobs:
         else
           echo "❌ 任务执行失败"
         fi
-
