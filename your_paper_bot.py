@@ -156,6 +156,7 @@ class DailyPaperBot:
     def _call_deepseek_json(self, system_prompt, user_prompt, max_tokens):
         retry_attempts = int(self.config.get('deepseek_retry_attempts', 3))
         model_name = self._get_deepseek_model_name()
+        last_error = None
 
         for attempt in range(retry_attempts):
             try:
@@ -173,6 +174,7 @@ class DailyPaperBot:
                 content = response.choices[0].message.content
                 return self._extract_json_object(content)
             except Exception as e:
+                last_error = e
                 if "DEEPSEEK_API_KEY 未配置" in str(e):
                     raise RuntimeError("AI分析失败: DEEPSEEK_API_KEY 未配置") from e
                 is_last_attempt = (attempt == retry_attempts - 1)
@@ -183,36 +185,74 @@ class DailyPaperBot:
                     e
                 )
                 if is_last_attempt:
-                    raise RuntimeError(f"AI分析失败: {e}") from e
+                    break
                 wait_s = self._deepseek_retry_wait_seconds(attempt)
                 logger.info("等待 %.1f 秒后重试DeepSeek ...", wait_s)
                 time.sleep(wait_s)
 
+        # 兜底：非JSON返回或服务短暂不可用时，再强制重试1次
+        logger.warning("DeepSeek常规重试已耗尽，执行额外兜底重试1次。最后错误: %s", last_error)
+        try:
+            client = self._get_deepseek_client()
+            strict_system_prompt = system_prompt + " 你必须只输出单个合法JSON对象，禁止输出解释或Markdown代码块。"
+            strict_user_prompt = user_prompt + "\n\n提醒：上一次输出不符合JSON要求。请仅返回合法JSON对象。"
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": strict_system_prompt},
+                    {"role": "user", "content": strict_user_prompt}
+                ],
+                temperature=self.config.get('temperature', 0.3),
+                max_tokens=max_tokens,
+                stream=False
+            )
+            content = response.choices[0].message.content
+            return self._extract_json_object(content)
+        except Exception as e:
+            raise RuntimeError(f"AI分析失败: {e}") from e
+
     def _build_chunk_prompt(self, chunk_papers):
-        return f"""你是专业天文学助手。请基于以下论文列表筛选“高红移星系及相关宇宙早期研究”。
+        return f"""你是专业天文学助手。请基于以下论文列表筛选“高红移星系及宇宙早期相关研究”。
 
-筛选时重点关注（包括但不限于）:
-- high-redshift galaxies, early universe, galaxy formation/evolution, reionization
-- AGN, ISM/CGM/IGM, JWST/ALMA/VLA等关键观测
+筛选范围（包括但不限于）：
+1) 直接高红移/早期宇宙目标
+- high-redshift galaxies, cosmic dawn, first light, early universe, reionization/EoR
+- z>=1 星系、Lyman-break galaxies (LBG), dropout, Lyman-alpha emitters (LAE)
+- Pop III / very massive stars, primordial galaxies, UV luminosity function, stellar mass function at high-z
+- 高红移AGN/quasar及其宿主星系、SMBH早期增长
+- 与高红移观测相关的宇宙学开放问题：Hubble tension、暗物质本质、暗能量本质
 
-只输出JSON对象，不要输出任何额外文本。JSON格式必须是:
+2) 与高红移星系物理紧密相关
+- galaxy formation/evolution, star formation history, metal enrichment
+- ISM/CGM/IGM, neutral fraction, ionizing photon budget, escape fraction
+- nebular emission lines (如 [OIII], Hβ, Hα 等), photoionization diagnostics
+- dust-obscured high-z galaxies, submm/mm studies, [CII]/CO lines
+- 高红移环境与大尺度结构：overdensity, cluster, proto-cluster, galaxy group
+
+3) 关键观测与方法（只要与高红移目标有明确联系）
+- JWST (NIRCam/NIRSpec/MIRI), ALMA, VLA, HST, Roman, Euclid, DESI, LSST 等
+- gravitational lensing (strong/weak/cluster lensing), magnification
+- photometric/spectroscopic redshift methods, SED fitting for high-z constraints
+
+筛选规则：
+- 保留与“高红移星系/早期宇宙”有明确实质关联的论文。
+- 若仅为方法论文，需能明确服务于高红移科学目标，否则不选。
+- 严格使用输入中的 paper_id，不可编造。
+
+只输出 JSON 对象，不要输出任何额外文本。格式必须是：
 {{
   "selected_papers": [
     {{
       "paper_id": "P001",
       "title_zh": "中文标题",
-      "abstract_zh": "中文摘要翻译（120~220字）",
-      "relevance_reason_zh": "为何相关（40~90字）",
-      "relevance_score": 0
+      "abstract_zh": "中文摘要翻译（建议 150~320 字，可按内容复杂度浮动）",
+      "relevance_reason_zh": "为何相关（建议 60~140 字，需点明与高红移科学的连接）",
+      "relevance_score": 0,
+      "relevance_tags": ["high-z", "reionization", "lensing"]
     }}
   ],
-  "chunk_summary_zh": "该批次研究方向总结（80~150字）"
+  "chunk_summary_zh": "该批次研究方向总结（建议 100~220 字）"
 }}
-
-注意:
-- `paper_id` 必须来自输入，不可编造
-- 只保留高相关论文；可以返回空数组
-- `relevance_score` 为0~100整数
 
 论文数据:
 {json.dumps(chunk_papers, ensure_ascii=False, default=self.json_serializer)}
@@ -297,7 +337,12 @@ class DailyPaperBot:
             title = escape(p.get("title", ""))
             title_zh = escape(p.get("title_zh", ""))
             published = escape(str(p.get("published", "")))
-            authors = escape(", ".join(p.get("authors", [])))
+            authors_list = p.get("authors", [])
+            shown_authors = authors_list[:10]
+            authors_text = ", ".join(shown_authors)
+            if len(authors_list) > 10:
+                authors_text += f" 等{len(authors_list)}位作者"
+            authors = escape(authors_text)
             abstract = escape(p.get("summary", ""))
             if len(abstract) > 420:
                 abstract = abstract[:210] + " ... " + abstract[-140:]
@@ -420,6 +465,7 @@ class DailyPaperBot:
                         "abstract_zh": str(row.get("abstract_zh", "")).strip(),
                         "relevance_reason_zh": str(row.get("relevance_reason_zh", "")).strip(),
                         "relevance_score": int(row.get("relevance_score", 0)),
+                        "relevance_tags": row.get("relevance_tags", []),
                     })
 
         # 去重：按paper_id保留最高评分
