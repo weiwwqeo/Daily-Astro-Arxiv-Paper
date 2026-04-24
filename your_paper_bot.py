@@ -247,7 +247,6 @@ class DailyPaperBot:
       "title_zh": "中文标题",
       "abstract_zh": "中文摘要翻译（建议 150~320 字，可按内容复杂度浮动）",
       "relevance_reason_zh": "为何相关（建议 60~140 字，需点明与高红移科学的连接）",
-      "relevance_score": 0,
       "relevance_tags": ["high-z", "reionization", "lensing"]
     }}
   ],
@@ -281,7 +280,6 @@ class DailyPaperBot:
                 "title": p.get("title", ""),
                 "title_zh": p.get("title_zh", ""),
                 "reason": p.get("relevance_reason_zh", ""),
-                "score": p.get("relevance_score", 0),
             })
 
         batch_size = 20
@@ -348,7 +346,6 @@ class DailyPaperBot:
                 abstract = abstract[:210] + " ... " + abstract[-140:]
             abstract_zh = escape(p.get("abstract_zh", ""))
             reason_zh = escape(p.get("relevance_reason_zh", ""))
-            score = escape(str(p.get("relevance_score", "")))
             url = escape(p.get("pdf_url", ""))
             item = f"""
             <div class="paper">
@@ -356,7 +353,6 @@ class DailyPaperBot:
                 <div class="paper-title-translation">论文名翻译: {title_zh}</div>
                 <div class="paper-meta">发表时间: {published}</div>
                 <div class="paper-meta">作者: {authors}</div>
-                <div class="paper-meta">相关性评分: {score}</div>
                 <div class="paper-abstract">摘要: {abstract}</div>
                 <div class="paper-abstract-translation">摘要翻译: {abstract_zh}</div>
                 <div class="paper-meta">相关性说明: {reason_zh}</div>
@@ -437,6 +433,7 @@ class DailyPaperBot:
         selected_merged = []
         chunk_summaries = []
         futures = []
+        paper_order = {row["paper_id"]: idx for idx, row in enumerate(paper_rows)}
         with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
             for idx, chunk in enumerate(chunks):
                 futures.append(executor.submit(self._analyze_chunk, idx, chunk))
@@ -464,20 +461,19 @@ class DailyPaperBot:
                         "title_zh": str(row.get("title_zh", "")).strip(),
                         "abstract_zh": str(row.get("abstract_zh", "")).strip(),
                         "relevance_reason_zh": str(row.get("relevance_reason_zh", "")).strip(),
-                        "relevance_score": int(row.get("relevance_score", 0)),
                         "relevance_tags": row.get("relevance_tags", []),
                     })
 
-        # 去重：按paper_id保留最高评分
+        # 去重：按paper_id保留第一条，并恢复原始抓取顺序
         best_by_id = {}
         for p in selected_merged:
             pid = p["paper_id"]
-            if pid not in best_by_id or p["relevance_score"] > best_by_id[pid]["relevance_score"]:
+            if pid not in best_by_id:
                 best_by_id[pid] = p
         deduped = list(best_by_id.values())
         if not deduped and not chunk_summaries:
             raise RuntimeError("DeepSeek分块分析全部失败")
-        deduped.sort(key=lambda x: x["relevance_score"], reverse=True)
+        deduped.sort(key=lambda x: paper_order.get(x["paper_id"], 10**9))
         chunk_summaries_sorted = [s for _, s in sorted(chunk_summaries, key=lambda x: x[0]) if s]
 
         return {
