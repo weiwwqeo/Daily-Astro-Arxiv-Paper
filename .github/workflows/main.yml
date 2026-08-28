@@ -71,7 +71,6 @@ jobs:
         
         # 可选Secrets（使用默认值）
         EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER || secrets.EMAIL_SENDER }}
-        DEEPSEEK_MODEL: ${{ secrets.DEEPSEEK_MODEL || 'deepseek-chat' }}
         # 运行参数
         TARGET_DATE1: ${{ github.event.inputs.target_date1 }}
         TARGET_DATE2: ${{ github.event.inputs.target_date2 }}
@@ -92,7 +91,7 @@ jobs:
         echo "当前时间：$(printf '%(%Y-%m-%d %H:%M:%S)T')"
 
         echo "目标日期: ${TARGET_DATE1} to ${TARGET_DATE2} "
-        echo "AI模型: ${DEEPSEEK_MODEL}"
+        echo "AI模型: deepseek-v4-flash"
 
         echo "=== 调试信息 ==="
         echo "当前目录: $(pwd)"

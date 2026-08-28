@@ -6,6 +6,8 @@ import random
 import time
 import re
 import arxiv
+import requests
+from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from html import escape
@@ -40,8 +42,11 @@ class DailyPaperBot:
         return False
 
     def get_arxiv_papers(self, category='astro-ph.GA'):
-        """使用arXiv API获取指定日期的astro-ph.GA论文"""    
-        query = f"cat:{category} AND submittedDate:[{self.target_date1} TO {self.target_date2}]"
+        """优先使用arXiv API，失败后从arXiv搜索HTML抓取论文。"""
+        query = (
+            f"cat:{category} AND "
+            f"submittedDate:[{self.target_date1}0000 TO {self.target_date2}2359]"
+        )
         fetch_attempts = int(self.config.get('arxiv_fetch_attempts', 4))
         delay_seconds = float(self.config.get('arxiv_delay_seconds', 3))
         num_retries = int(self.config.get('arxiv_num_retries', 3))
@@ -70,6 +75,9 @@ class DailyPaperBot:
                         "pdf_url": paper.pdf_url  # 下载链接
                     })
                     # 你可以在此处直接下载PDF：paper.download_pdf(dirpath="./papers/")
+                if not paper_list:
+                    logger.warning("arXiv API返回空列表，使用HTML复核: %s", category)
+                    return self.get_arxiv_papers_from_html(category)
                 print(f"在 {self.target_date1} 到 {self.target_date2} 找到了 {len(paper_list)} 篇 {category} 论文。")
                 return paper_list
             except Exception as e:
@@ -83,13 +91,163 @@ class DailyPaperBot:
                     e
                 )
                 if (not is_retryable) or is_last_attempt:
-                    raise
+                    logger.warning("arXiv API不可用，切换到HTML抓取: %s", category)
+                    return self.get_arxiv_papers_from_html(category)
                 wait_s = self._retry_wait_seconds(attempt)
                 logger.info("等待 %.1f 秒后重试分类 %s ...", wait_s, category)
                 time.sleep(wait_s)
 
         # 理论上不会到这里
         raise RuntimeError(f"抓取 {category} 失败")
+
+    def get_arxiv_papers_from_html(self, category='astro-ph.GA'):
+        """从arXiv advanced-search HTML抓取，并按精确分类与提交日期过滤。"""
+        start_day = datetime.strptime(self.target_date1, "%Y%m%d")
+        end_day = datetime.strptime(self.target_date2, "%Y%m%d")
+        page_size = 50
+        paper_list = []
+        seen_ids = set()
+        session = requests.Session()
+        session.headers.update({
+            "User-Agent": (
+                "Daily-Astro-Arxiv-Paper/1.0 "
+                "(https://github.com/weiwwqeo/Daily-Astro-Arxiv-Paper)"
+            )
+        })
+
+        current_day = start_day
+        while current_day <= end_day:
+            # arXiv advanced-search的日期上界是排他的，因此使用[day, day+1)。
+            next_day = current_day + timedelta(days=1)
+            search_modes = (
+                # 主分类：搜索全部astro-ph后按页面显示的主分类标签过滤。
+                {"term": "", "field": "title", "require_category_tag": True},
+                # 交叉分类：advanced-search提供精确的cross_list_category字段。
+                {"term": category, "field": "cross_list_category", "require_category_tag": False},
+            )
+            for mode in search_modes:
+                page_start = 0
+                while True:
+                    params = {
+                    "advanced": "",
+                    "terms-0-operator": "AND",
+                    "terms-0-term": mode["term"],
+                    "terms-0-field": mode["field"],
+                    "classification-physics": "y",
+                    "classification-physics_archives": "astro-ph",
+                    "classification-include_cross_list": "include",
+                    "date-filter_by": "date_range",
+                    "date-from_date": current_day.strftime("%Y-%m-%d"),
+                    "date-to_date": next_day.strftime("%Y-%m-%d"),
+                    "date-date_type": "submitted_date",
+                    "abstracts": "show",
+                    "size": page_size,
+                    "order": "submitted_date",
+                    "start": page_start,
+                    }
+                    response = self._request_arxiv_html(session, params)
+                    soup = BeautifulSoup(response.text, "html.parser")
+                    results = soup.select("li.arxiv-result")
+                    parsed = self._parse_arxiv_html_results(
+                        results,
+                        category,
+                        current_day,
+                        seen_ids,
+                        mode["require_category_tag"],
+                    )
+                    paper_list.extend(parsed)
+
+                    if len(results) < page_size:
+                        break
+                    page_start += page_size
+                    time.sleep(float(self.config.get('arxiv_delay_seconds', 3)))
+            current_day = next_day
+
+        logger.info(
+            "HTML fallback在 %s 到 %s 找到 %s 篇 %s 论文",
+            self.target_date1,
+            self.target_date2,
+            len(paper_list),
+            category,
+        )
+        return paper_list
+
+    def _parse_arxiv_html_results(
+        self,
+        results,
+        category,
+        current_day,
+        seen_ids,
+        require_category_tag,
+    ):
+        papers = []
+        for item in results:
+            categories = [tag.get_text(strip=True) for tag in item.select("div.tags span.tag")]
+            if require_category_tag and category not in categories:
+                continue
+
+            abs_link = item.select_one("p.list-title a[href*='/abs/']")
+            title_node = item.select_one("p.title")
+            abstract_node = item.select_one("p.abstract span.abstract-full")
+            if not abs_link or not title_node or not abstract_node:
+                continue
+
+            arxiv_id = abs_link.get_text(" ", strip=True).replace("arXiv:", "").strip()
+            arxiv_id = re.sub(r"v\d+$", "", arxiv_id)
+            if not arxiv_id or arxiv_id in seen_ids:
+                continue
+
+            submitted_text = ""
+            for meta in item.select("p.is-size-7"):
+                if meta.find("span", string=re.compile(r"^Submitted$")):
+                    submitted_text = meta.get_text(" ", strip=True)
+                    break
+            # 修订稿会列出v1 submitted；首版稿只有Submitted，两者均映射到API的published。
+            date_match = re.search(r"v1\s+submitted\s+(\d{1,2}\s+\w+,\s+\d{4})", submitted_text)
+            if not date_match:
+                date_match = re.search(r"Submitted\s+(\d{1,2}\s+\w+,\s+\d{4})", submitted_text)
+            if not date_match:
+                continue
+            published = datetime.strptime(date_match.group(1), "%d %B, %Y")
+            if published.date() != current_day.date():
+                continue
+
+            abstract_clone = BeautifulSoup(str(abstract_node), "html.parser")
+            for link in abstract_clone.select("a"):
+                link.decompose()
+
+            seen_ids.add(arxiv_id)
+            papers.append({
+                "title": title_node.get_text(" ", strip=True),
+                "authors": [a.get_text(" ", strip=True) for a in item.select("p.authors a")],
+                "published": published,
+                "summary": abstract_clone.get_text(" ", strip=True),
+                "pdf_url": f"https://arxiv.org/pdf/{arxiv_id}",
+            })
+        return papers
+
+    def _request_arxiv_html(self, session, params):
+        attempts = int(self.config.get('arxiv_fetch_attempts', 4))
+        last_error = None
+        for attempt in range(attempts):
+            try:
+                # 每次使用新连接，避免持续命中同一个返回5xx的arXiv后端节点。
+                response = requests.get(
+                    "https://arxiv.org/search/advanced",
+                    params=params,
+                    timeout=45,
+                    headers=session.headers,
+                )
+                response.raise_for_status()
+                return response
+            except requests.RequestException as e:
+                last_error = e
+                if attempt == attempts - 1:
+                    break
+                wait_s = self._retry_wait_seconds(attempt)
+                logger.warning("arXiv HTML抓取失败，%.1f秒后重试: %s", wait_s, e)
+                time.sleep(wait_s)
+        raise RuntimeError(f"arXiv HTML fallback失败: {last_error}")
     def save_papers_to_json(self,papers, filename='parsed_papers.json'):
         """将解析后的论文保存为JSON文件"""
         # with open(filename, 'w', encoding='utf-8') as f:
@@ -128,12 +286,7 @@ class DailyPaperBot:
         return OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
 
     def _get_deepseek_model_name(self):
-        model_name = self.config.get('deepseek_model', '')
-        if not model_name:
-            model_name = "deepseek-chat"
-        if model_name == "deepseek-chat" and self.config.get('thinking', True):
-            model_name = "deepseek-reasoner"
-        return model_name
+        return self.config.get('deepseek_model', 'deepseek-v4-flash')
 
     def _deepseek_retry_wait_seconds(self, attempt_index):
         base = float(self.config.get('deepseek_backoff_seconds', 4.0))
@@ -585,6 +738,17 @@ class DailyPaperBot:
             except Exception as e:
                 failed_categories.append(category)
                 logger.error("分类 %s 抓取失败: %s", category, e)
+
+        # 同一论文可能同时属于GA和CO，只保留第一次出现并维持抓取顺序。
+        unique_papers = []
+        seen_urls = set()
+        for paper in papers:
+            paper_url = re.sub(r"v\d+$", "", paper.get("pdf_url", ""))
+            if paper_url in seen_urls:
+                continue
+            seen_urls.add(paper_url)
+            unique_papers.append(paper)
+        papers = unique_papers
 
         if failed_categories:
             logger.warning("以下分类抓取失败: %s", ", ".join(failed_categories))

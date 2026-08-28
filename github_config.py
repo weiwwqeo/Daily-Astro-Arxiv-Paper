@@ -23,17 +23,13 @@ def get_github_config():
     raw_receivers = os.environ.get('EMAIL_RECEIVER', '')
     email_receivers = [x.strip() for x in raw_receivers.split(',') if x.strip()]
 
-    thinking_raw = os.environ.get('THINKING', 'true').strip().lower()
-    thinking = thinking_raw in ('1', 'true', 'yes', 'on')
-    
     return {
         'target_date1': target_date1,
         'target_date2': target_date2,
         'deepseek_api_key': os.environ.get('DEEPSEEK_API_KEY', ''),
-        'deepseek_model': os.environ.get('DEEPSEEK_MODEL', '').strip(),
+        'deepseek_model': 'deepseek-v4-flash',
         'temperature': 0.3,
         'max_tokens': 8192,
-        'thinking': thinking,
         'email_sender': os.environ.get('EMAIL_SENDER', ''),
         'email_password': os.environ.get('EMAIL_PASSWORD', ''),
         'smtp_server': os.environ.get('SMTP_SERVER', 'smtp.qq.com'),

@@ -26,8 +26,8 @@ Daily. Get papers about high-z galaxies and galactic cosmology on Arxiv, filter 
 ## Notes
 以下是本project采用的设置，可以根据你自己的需要更改`your_paper_bot.py`。
 * 邮件部分用的是qq mail，可以自行修改。
-* 目前LLM用的是Deepseek V3.2 (思考），可以自行选择。请确认API-key有效，额度充足。一次运行消耗token不超过0.1¥。
-* 本project基于arxiv的API，感兴趣的领域（e.g. astro-ph.EP,astro-ph.GA 等）可以自己更改
-* LLM一次性接受和输出的token长度有最大限制，如果当天筛选出的相关paper太多，可能导致输出不完整。
+* 目前LLM固定使用 `deepseek-v4-flash`。请确认API key有效、额度充足。
+* 本project优先使用arXiv API；API在重试后仍不可用时，会自动从arXiv advanced-search HTML抓取。感兴趣的领域（e.g. astro-ph.EP,astro-ph.GA 等）可以自行更改。
+* 论文会按固定数量分块并发分析，再由程序统一生成HTML邮件，以降低单次上下文长度限制带来的截断风险。
 
 *Developing*
