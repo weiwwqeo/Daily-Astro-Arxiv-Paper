@@ -25,6 +25,7 @@ class DailyPaperBot:
         self.target_date1 = self.config.get('target_date1', (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d'))
         self.target_date2 = self.config.get('target_date2', (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d'))
         self.papers = []
+        self._arxiv_api_unavailable = False
 
 
     def _retry_wait_seconds(self, attempt_index):
@@ -43,6 +44,10 @@ class DailyPaperBot:
 
     def get_arxiv_papers(self, category='astro-ph.GA'):
         """优先使用arXiv API，失败后从arXiv搜索HTML抓取论文。"""
+        if self._arxiv_api_unavailable:
+            logger.info("本轮已确认arXiv API不可用，直接使用HTML抓取: %s", category)
+            return self.get_arxiv_papers_from_html(category)
+
         query = (
             f"cat:{category} AND "
             f"submittedDate:[{self.target_date1}0000 TO {self.target_date2}2359]"
@@ -90,7 +95,12 @@ class DailyPaperBot:
                     fetch_attempts,
                     e
                 )
+                if isinstance(e, arxiv.HTTPError) and e.status == 429:
+                    self._arxiv_api_unavailable = True
+                    logger.warning("arXiv API触发429限流，本轮后续分类直接使用HTML")
+                    return self.get_arxiv_papers_from_html(category)
                 if (not is_retryable) or is_last_attempt:
+                    self._arxiv_api_unavailable = True
                     logger.warning("arXiv API不可用，切换到HTML抓取: %s", category)
                     return self.get_arxiv_papers_from_html(category)
                 wait_s = self._retry_wait_seconds(attempt)
@@ -283,10 +293,15 @@ class DailyPaperBot:
         api_key = self.config.get('deepseek_api_key', '').strip()
         if not api_key:
             raise RuntimeError("DEEPSEEK_API_KEY 未配置")
-        return OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
+        return OpenAI(
+            api_key=api_key,
+            base_url="https://api.deepseek.com",
+            timeout=120.0,
+            max_retries=0,
+        )
 
     def _get_deepseek_model_name(self):
-        return self.config.get('deepseek_model', 'deepseek-v4-flash')
+        return self.config.get('deepseek_model', 'deepseek-flash')
 
     def _deepseek_retry_wait_seconds(self, attempt_index):
         base = float(self.config.get('deepseek_backoff_seconds', 4.0))
@@ -306,6 +321,31 @@ class DailyPaperBot:
             raise RuntimeError("DeepSeek返回中未找到JSON对象")
         return json.loads(text[first:last + 1])
 
+    def _get_deepseek_message_text(self, response):
+        message = response.choices[0].message
+        content = message.content
+        if isinstance(content, str) and content.strip():
+            return content
+        if isinstance(content, list):
+            parts = []
+            for block in content:
+                if isinstance(block, dict):
+                    parts.append(str(block.get("text", "")))
+                else:
+                    parts.append(str(getattr(block, "text", "")))
+            joined = "".join(parts).strip()
+            if joined:
+                return joined
+
+        # 部分DeepSeek模型会把结果放在reasoning_content中。
+        reasoning_content = getattr(message, "reasoning_content", None)
+        if isinstance(reasoning_content, str) and reasoning_content.strip():
+            logger.warning("DeepSeek content为空，尝试解析reasoning_content")
+            return reasoning_content
+
+        finish_reason = getattr(response.choices[0], "finish_reason", None)
+        raise RuntimeError(f"DeepSeek返回为空（finish_reason={finish_reason}）")
+
     def _call_deepseek_json(self, system_prompt, user_prompt, max_tokens):
         retry_attempts = int(self.config.get('deepseek_retry_attempts', 3))
         model_name = self._get_deepseek_model_name()
@@ -314,17 +354,21 @@ class DailyPaperBot:
         for attempt in range(retry_attempts):
             try:
                 client = self._get_deepseek_client()
+                strict_suffix = ""
+                if attempt > 0:
+                    strict_suffix = "\n\n上一次响应无效。只返回一个完整、合法的JSON对象，不要输出Markdown或解释。"
                 response = client.chat.completions.create(
                     model=model_name,
                     messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt}
+                        {"role": "system", "content": system_prompt + strict_suffix},
+                        {"role": "user", "content": user_prompt + strict_suffix}
                     ],
                     temperature=self.config.get('temperature', 0.3),
                     max_tokens=max_tokens,
-                    stream=False
+                    stream=False,
+                    response_format={"type": "json_object"},
                 )
-                content = response.choices[0].message.content
+                content = self._get_deepseek_message_text(response)
                 return self._extract_json_object(content)
             except Exception as e:
                 last_error = e
@@ -342,27 +386,7 @@ class DailyPaperBot:
                 wait_s = self._deepseek_retry_wait_seconds(attempt)
                 logger.info("等待 %.1f 秒后重试DeepSeek ...", wait_s)
                 time.sleep(wait_s)
-
-        # 兜底：非JSON返回或服务短暂不可用时，再强制重试1次
-        logger.warning("DeepSeek常规重试已耗尽，执行额外兜底重试1次。最后错误: %s", last_error)
-        try:
-            client = self._get_deepseek_client()
-            strict_system_prompt = system_prompt + " 你必须只输出单个合法JSON对象，禁止输出解释或Markdown代码块。"
-            strict_user_prompt = user_prompt + "\n\n提醒：上一次输出不符合JSON要求。请仅返回合法JSON对象。"
-            response = client.chat.completions.create(
-                model=model_name,
-                messages=[
-                    {"role": "system", "content": strict_system_prompt},
-                    {"role": "user", "content": strict_user_prompt}
-                ],
-                temperature=self.config.get('temperature', 0.3),
-                max_tokens=max_tokens,
-                stream=False
-            )
-            content = response.choices[0].message.content
-            return self._extract_json_object(content)
-        except Exception as e:
-            raise RuntimeError(f"AI分析失败: {e}") from e
+        raise RuntimeError(f"AI分析失败: {last_error}") from last_error
 
     def _build_chunk_prompt(self, chunk_papers):
         return f"""你是专业天文学助手。请基于以下论文列表筛选“高红移星系及宇宙早期相关研究”。
@@ -413,7 +437,7 @@ class DailyPaperBot:
     def _analyze_chunk(self, chunk_index, chunk_papers):
         system_prompt = "你是严谨的天文学文献筛选与翻译助手。必须返回合法JSON。"
         user_prompt = self._build_chunk_prompt(chunk_papers)
-        chunk_result = self._call_deepseek_json(system_prompt, user_prompt, max_tokens=3200)
+        chunk_result = self._call_deepseek_json(system_prompt, user_prompt, max_tokens=6000)
         selected = chunk_result.get("selected_papers", [])
         if not isinstance(selected, list):
             selected = []
@@ -421,6 +445,46 @@ class DailyPaperBot:
         if not isinstance(summary, str):
             summary = ""
         return chunk_index, selected, summary
+
+    def _analyze_chunk_resilient(self, chunk_index, chunk_papers):
+        try:
+            return self._analyze_chunk(chunk_index, chunk_papers)
+        except Exception as original_error:
+            formatting_markers = (
+                "DeepSeek返回为空",
+                "未找到JSON对象",
+                "Expecting ",
+                "Unterminated string",
+                "Extra data",
+            )
+            can_split = any(marker in str(original_error) for marker in formatting_markers)
+            if len(chunk_papers) <= 1 or not can_split:
+                raise
+            midpoint = len(chunk_papers) // 2
+            logger.warning(
+                "DeepSeek分块 %s 失败，拆分为 %s + %s 篇重试",
+                chunk_index + 1,
+                midpoint,
+                len(chunk_papers) - midpoint,
+            )
+            selected = []
+            summaries = []
+            successful_halves = 0
+            for subchunk in (chunk_papers[:midpoint], chunk_papers[midpoint:]):
+                try:
+                    _, sub_selected, sub_summary = self._analyze_chunk(
+                        chunk_index,
+                        subchunk,
+                    )
+                    selected.extend(sub_selected)
+                    if sub_summary:
+                        summaries.append(sub_summary)
+                    successful_halves += 1
+                except Exception as e:
+                    logger.error("DeepSeek子分块最终失败: %s", e)
+            if not successful_halves:
+                raise RuntimeError(f"DeepSeek分块 {chunk_index + 1} 全部失败")
+            return chunk_index, selected, " ".join(summaries)
 
     def _build_final_summary(self, selected_papers, chunk_summaries):
         if not selected_papers:
@@ -449,14 +513,20 @@ class DailyPaperBot:
 批次论文要点:
 {json.dumps(batch, ensure_ascii=False)}
 """
-            batch_result = self._call_deepseek_json(
-                "你是天文学综述助手。必须返回合法JSON。",
-                batch_prompt,
-                max_tokens=500
-            )
-            batch_summary = batch_result.get("batch_summary_zh", "")
-            if isinstance(batch_summary, str) and batch_summary.strip():
-                batch_summaries.append(batch_summary.strip())
+            try:
+                batch_result = self._call_deepseek_json(
+                    "你是天文学综述助手。必须返回合法JSON。",
+                    batch_prompt,
+                    max_tokens=700
+                )
+                batch_summary = batch_result.get("batch_summary_zh", "")
+                if isinstance(batch_summary, str) and batch_summary.strip():
+                    batch_summaries.append(batch_summary.strip())
+                    continue
+            except Exception as e:
+                logger.warning("批次总结失败，使用论文标题兜底: %s", e)
+            fallback_titles = [p.get("title_zh") or p.get("title", "") for p in batch]
+            batch_summaries.append("本批入选论文包括：" + "；".join(fallback_titles))
 
         final_prompt = f"""请根据以下信息写一段中文总结（约180~280字），面向天文专业研究者，突出当日趋势和重点方向。
 注意：批次总结已覆盖全部入选论文，请综合后给出总览。
@@ -471,15 +541,18 @@ class DailyPaperBot:
 批次总结:
 {json.dumps(batch_summaries, ensure_ascii=False)}
 """
-        result = self._call_deepseek_json(
-            "你是天文学综述助手。必须返回合法JSON。",
-            final_prompt,
-            max_tokens=700
-        )
-        summary = result.get("daily_summary_zh", "")
-        if not isinstance(summary, str) or not summary.strip():
-            return "当日相关研究主要围绕高红移星系形成与演化、星系环境气体过程及关键观测数据分析展开。"
-        return summary.strip()
+        try:
+            result = self._call_deepseek_json(
+                "你是天文学综述助手。必须返回合法JSON。",
+                final_prompt,
+                max_tokens=1000
+            )
+            summary = result.get("daily_summary_zh", "")
+            if isinstance(summary, str) and summary.strip():
+                return summary.strip()
+        except Exception as e:
+            logger.warning("最终总结失败，使用批次总结兜底: %s", e)
+        return " ".join(batch_summaries)
 
     def render_html_email(self, selected_papers, daily_summary_zh, total_papers):
         date_text = f"{self.target_date1} to {self.target_date2}"
@@ -589,7 +662,7 @@ class DailyPaperBot:
         paper_order = {row["paper_id"]: idx for idx, row in enumerate(paper_rows)}
         with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
             for idx, chunk in enumerate(chunks):
-                futures.append(executor.submit(self._analyze_chunk, idx, chunk))
+                futures.append(executor.submit(self._analyze_chunk_resilient, idx, chunk))
 
             for fut in as_completed(futures):
                 try:

@@ -26,7 +26,7 @@ Daily. Get papers about high-z galaxies and galactic cosmology on Arxiv, filter 
 ## Notes
 以下是本project采用的设置，可以根据你自己的需要更改`your_paper_bot.py`。
 * 邮件部分用的是qq mail，可以自行修改。
-* 目前LLM固定使用 `deepseek-v4-flash`。请确认API key有效、额度充足。
+* 目前LLM固定使用 `deepseek-flash`。请确认API key有效、额度充足。
 * 本project优先使用arXiv API；API在重试后仍不可用时，会自动从arXiv advanced-search HTML抓取。感兴趣的领域（e.g. astro-ph.EP,astro-ph.GA 等）可以自行更改。
 * 论文会按固定数量分块并发分析，再由程序统一生成HTML邮件，以降低单次上下文长度限制带来的截断风险。
 

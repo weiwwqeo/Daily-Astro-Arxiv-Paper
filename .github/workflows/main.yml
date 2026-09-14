@@ -91,7 +91,7 @@ jobs:
         echo "当前时间：$(printf '%(%Y-%m-%d %H:%M:%S)T')"
 
         echo "目标日期: ${TARGET_DATE1} to ${TARGET_DATE2} "
-        echo "AI模型: deepseek-v4-flash"
+        echo "AI模型: deepseek-flash"
 
         echo "=== 调试信息 ==="
         echo "当前目录: $(pwd)"

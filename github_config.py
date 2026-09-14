@@ -27,7 +27,7 @@ def get_github_config():
         'target_date1': target_date1,
         'target_date2': target_date2,
         'deepseek_api_key': os.environ.get('DEEPSEEK_API_KEY', ''),
-        'deepseek_model': 'deepseek-v4-flash',
+        'deepseek_model': 'deepseek-flash',
         'temperature': 0.3,
         'max_tokens': 8192,
         'email_sender': os.environ.get('EMAIL_SENDER', ''),
@@ -37,12 +37,12 @@ def get_github_config():
         'email_receiver': email_receivers,
         # arXiv抓取容错参数（固定配置，不依赖环境变量）
         'arxiv_delay_seconds': 3.0,
-        'arxiv_num_retries': 3,
-        'arxiv_fetch_attempts': 4,
+        'arxiv_num_retries': 0,
+        'arxiv_fetch_attempts': 2,
         'arxiv_backoff_seconds': 8.0,
         # DeepSeek分块并发参数（固定配置，不依赖环境变量）
-        'deepseek_chunk_size': 10,
-        'deepseek_parallel_workers': 4,
-        'deepseek_retry_attempts': 3,
+        'deepseek_chunk_size': 6,
+        'deepseek_parallel_workers': 2,
+        'deepseek_retry_attempts': 2,
         'deepseek_backoff_seconds': 4.0,
     }
